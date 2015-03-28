@@ -12,7 +12,7 @@
 
 @import Foundation;
 
-#include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #import <GBCli/GBCli.h>
@@ -21,7 +21,7 @@
 #pragma mark Globals
 
 int   returnCode = EXIT_SUCCESS;
-bool  shouldExit = false;
+BOOL  shouldExit = NO;
 
 #pragma mark - Main function
 
@@ -50,7 +50,7 @@ int main(int argc, const char * argv[]) {
                     fprintf(stdout, "%s\n", finalLocation.path.UTF8String);
                 }
             }
-            shouldExit = true;
+            shouldExit = YES;
         }];
 
         if (!task) {
