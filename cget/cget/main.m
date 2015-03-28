@@ -15,6 +15,8 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
+#import <GBCli/GBCli.h>
+
 
 #pragma mark Globals
 
