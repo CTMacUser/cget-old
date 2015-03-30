@@ -27,7 +27,7 @@ BOOL  shouldExit = NO;
 
 int main(int argc, const char * argv[]) {
     if (argc != 2) {
-        fprintf(stderr, "Usage: %s URL\n", argv[0]);
+        gbfprintln(stderr, @"Usage: %s URL", argv[0]);
         returnCode = EXIT_FAILURE;
         goto finish;
     }
@@ -37,17 +37,19 @@ int main(int argc, const char * argv[]) {
         NSURLSession * const           session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration] delegate:nil delegateQueue:[NSOperationQueue mainQueue]];
         NSURLSessionDownloadTask * const  task = [session downloadTaskWithURL:[NSURL URLWithString:[NSString stringWithUTF8String:argv[1]]] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
             if (error) {
-                fprintf(stderr, "Error, downloading: %s\n", error.localizedFailureReason.UTF8String ?: error.localizedDescription.UTF8String);
+                gbfprint(stderr, @"Error, downloading: %@", error.localizedDescription);
+                gbfprintln(stderr, error.localizedFailureReason ? @" (%@)" : @"", error.localizedFailureReason);
                 returnCode = EXIT_FAILURE;
             } else {
                 NSURL * const  finalLocation = [NSURL fileURLWithPath:response.suggestedFilename isDirectory:NO];
 
                 [[NSFileManager defaultManager] moveItemAtURL:location toURL:finalLocation error:&error];
                 if (error) {
-                    fprintf(stderr, "Error, copying: %s\n", error.localizedFailureReason.UTF8String ?: error.localizedDescription.UTF8String);
+                    gbfprint(stderr, @"Error, copying: %@", error.localizedDescription);
+                    gbfprintln(stderr, error.localizedFailureReason ? @" (%@)" : @"", error.localizedFailureReason);
                     returnCode = EXIT_FAILURE;
                 } else {
-                    fprintf(stdout, "%s\n", finalLocation.path.UTF8String);
+                    gbprintln(@"%@", finalLocation.path);
                 }
             }
             shouldExit = YES;
