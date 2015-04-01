@@ -30,26 +30,23 @@ typedef NS_ENUM(int, CgReturnCodes) {
 
 #pragma mark - Support functions
 
+/**
+    @brief Copy a (temporary) file to another's volume's item-replacement directory.
+    @param sourceTemporaryFile  The source file to move. Should be in a directory for temporary items. Must not be nil.
+    @param fileOnDestinationVolume  A sample destination file on the volume to receive the moved file. Must not be nil.
+    @param newTemporaryFile  The address to write the URL of the post-moved file. Must not be nil. Valid only if YES is returned, but may be mutated even if NO is returned instead.
+    @param error  The address to write the first encountered error. If not interested, pass in nil.
+    @return YES if the move was successfully done, NO if an error occurred instead.
+    @since 0.2
+ 
+    The file is moved even if the source and destination volumes are the same.
+ */
 static
 BOOL  CgMoveFileToDestinationTemporaryDirectory(NSURL *sourceTemporaryFile, NSURL *fileOnDestinationVolume, NSURL **newTemporaryFile, NSError **error) {
     NSCParameterAssert(sourceTemporaryFile);
     NSCParameterAssert(fileOnDestinationVolume);
     NSCParameterAssert(newTemporaryFile);
 
-    // Don't move if the source and destination files use the same volume.
-    id  sourceVolume = nil, destinationVolume = nil;
-
-    if ([sourceTemporaryFile getResourceValue:&sourceVolume forKey:NSURLVolumeIdentifierKey error:error] && [fileOnDestinationVolume getResourceValue:&destinationVolume forKey:NSURLVolumeIdentifierKey error:error]) {
-        if ([sourceVolume isEqual:destinationVolume]) {
-            *newTemporaryFile = sourceTemporaryFile;
-            return YES;
-        }
-        // Else: move the source file across volumes, see below.
-    } else {
-        return NO;
-    }
-
-    // Move the source file to the destination file's volume's temporary directory.
     NSFileManager * const  filer = [NSFileManager defaultManager];
     NSURL * const        tempDir = [filer URLForDirectory:NSItemReplacementDirectory inDomain:NSUserDomainMask appropriateForURL:fileOnDestinationVolume create:YES error:error];
 
@@ -60,6 +57,14 @@ BOOL  CgMoveFileToDestinationTemporaryDirectory(NSURL *sourceTemporaryFile, NSUR
     return [filer moveItemAtURL:sourceTemporaryFile toURL:*newTemporaryFile error:error];
 }
 
+/**
+    @brief Generate a name for a file's backup.
+    @param originalFilename  The name of the target file.
+    @return A new string with a suitable backup file name.
+    @since 0.2
+
+    The file name generated is the original filename with a random string inserted between the name's base and extension. The name component ".old" is added after the random string, both as a general reminder and as an extension if the original file was extension-less.
+ */
 static
 NSString *  CgBackupFilename(NSString *originalFilename) {
     NSCParameterAssert(originalFilename);
