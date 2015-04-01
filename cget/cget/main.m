@@ -84,18 +84,16 @@ int main(int argc, const char * argv[]) {
                 NSURL *        actualDestination = nil;
                 
                 NSCAssert(plannedDestination, @"Creating destination URL failed");
-                if (CgMoveFileToDestinationTemporaryDirectory(location, plannedDestination, &stagedLocation, &error) && [[NSFileManager defaultManager] replaceItemAtURL:plannedDestination withItemAtURL:stagedLocation backupItemName:CgBackupFilename(plannedDestination.path.lastPathComponent) options:NSFileManagerItemReplacementUsingNewMetadataOnly | NSFileManagerItemReplacementWithoutDeletingBackupItem resultingItemURL:&actualDestination error:&error]) {
+                if (CgMoveFileToDestinationTemporaryDirectory(location, plannedDestination, &stagedLocation, &error) && [[NSFileManager defaultManager] replaceItemAtURL:plannedDestination withItemAtURL:stagedLocation backupItemName:CgBackupFilename(plannedDestination.path.lastPathComponent) options:(NSFileManagerItemReplacementUsingNewMetadataOnly | NSFileManagerItemReplacementWithoutDeletingBackupItem) resultingItemURL:&actualDestination error:&error]) {
                     gbprintln(@"%@", actualDestination.path);
                     // To-do: Is there a way to find out if a backup file was needed and created?
                 } else {
-                    gbfprint(stderr, @"Error, copying: %@", error.localizedDescription);
-                    gbfprintln(stderr, error.localizedFailureReason ? @" (%@)" : @"", error.localizedFailureReason);
                     returnCode = EXIT_FAILURE;
+                    gbfprintln(stderr, @"Error, copying: %@", error.localizedDescription);
                 }
             } else {
-                gbfprint(stderr, @"Error, downloading: %@", error.localizedDescription);
-                gbfprintln(stderr, error.localizedFailureReason ? @" (%@)" : @"", error.localizedFailureReason);
                 returnCode = EXIT_FAILURE;
+                gbfprintln(stderr, @"Error, downloading: %@", error.localizedDescription);
             }
             shouldExit = YES;
         }];
