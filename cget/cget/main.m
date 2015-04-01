@@ -13,15 +13,20 @@
 @import Foundation;
 
 #include <stdio.h>
-#include <stdlib.h>
 
 #import <GBCli/GBCli.h>
 
 
 #pragma mark Globals
 
-int   returnCode = EXIT_SUCCESS;
-BOOL  shouldExit = NO;
+/// Possible return codes.
+typedef NS_ENUM(int, CgReturnCodes) {
+    cgr_success,  ///< No problems occurred.
+    cgr_no_url,  ///< No URL was given.
+    cgr_initialization_fail,  ///< A work object could not be allocated or initialized.
+    cgr_downloading_fail,  ///< Downloading of a target URL could not be completed.
+    cgr_copying_fail  ///< A downloaded file could not be moved to the designated directory.
+};
 
 #pragma mark - Support functions
 
@@ -65,13 +70,16 @@ NSString *  CgBackupFilename(NSString *originalFilename) {
 #pragma mark - Main function
 
 int main(int argc, const char * argv[]) {
+    __block int  returnCode = cgr_success;
+
     if (argc != 2) {
         gbfprintln(stderr, @"Usage: %s URL", argv[0]);
-        returnCode = EXIT_FAILURE;
+        returnCode = cgr_no_url;
         goto finish;
     }
 
     @autoreleasepool {
+        __block BOOL                shouldExit = NO;
         NSRunLoop * const              runLoop = [NSRunLoop currentRunLoop];
         NSURLSession * const           session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration] delegate:nil delegateQueue:[NSOperationQueue mainQueue]];
         NSURLSessionDownloadTask * const  task = [session downloadTaskWithURL:[NSURL URLWithString:[NSString stringWithUTF8String:argv[1]]] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
@@ -88,18 +96,18 @@ int main(int argc, const char * argv[]) {
                     gbprintln(@"%@", actualDestination.path);
                     // To-do: Is there a way to find out if a backup file was needed and created?
                 } else {
-                    returnCode = EXIT_FAILURE;
                     gbfprintln(stderr, @"Error, copying: %@", error.localizedDescription);
+                    returnCode = cgr_copying_fail;
                 }
             } else {
-                returnCode = EXIT_FAILURE;
                 gbfprintln(stderr, @"Error, downloading: %@", error.localizedDescription);
+                returnCode = cgr_downloading_fail;
             }
             shouldExit = YES;
         }];
 
         if (!task) {
-            returnCode = EXIT_FAILURE;
+            returnCode = cgr_initialization_fail;
             goto finish;
         }
         [task resume];
