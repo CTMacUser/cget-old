@@ -21,12 +21,12 @@
 
 /// Possible return codes.
 typedef NS_ENUM(int, CgReturnCodes) {
-    cgr_success,  ///< No problems occurred.
-    cgr_no_url,  ///< No URL was given.
-    cgr_initialization_fail,  ///< A work object could not be allocated or initialized.
-    cgr_downloading_fail,  ///< Downloading of a target URL could not be completed.
-    cgr_copying_fail,  ///< A downloaded file could not be moved to the designated directory.
-    cgr_metadata_and_url  ///< A "print and exit" option and a URL were both provided.
+    cgReturnSuccess,  ///< No problems occurred.
+    cgReturnNoURL,  ///< No URL was given.
+    cgReturnInitializationFail,  ///< A work object could not be allocated or initialized.
+    cgReturnDownloadingFail,  ///< Downloading of a target URL could not be completed.
+    cgReturnCopyingFail,  ///< A downloaded file could not be moved to the designated directory.
+    cgReturnMetadataAndURL  ///< A "print and exit" option and a URL were both provided.
 };
 
 // Long option strings
@@ -144,7 +144,7 @@ GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
 #pragma mark - Main function
 
 int main(int argc, const char * argv[]) {
-    __block int  returnCode = cgr_success;
+    __block int  returnCode = cgReturnSuccess;
 
     @autoreleasepool {
         // Process the command-line arguments.
@@ -154,7 +154,7 @@ int main(int argc, const char * argv[]) {
 
         if (!settings || !options || !parser) {
             gbfprintln(stderr, @"Error, initialization: command-line parser");
-            returnCode = cgr_initialization_fail;
+            returnCode = cgReturnInitializationFail;
             goto finish;
         }
         [parser registerSettings:settings];
@@ -164,7 +164,7 @@ int main(int argc, const char * argv[]) {
         // Must have a URL or a metadata (version or help text) request, but not both.
         if (argc <= 1) {
             [options printHelp];
-            returnCode = cgr_no_url;
+            returnCode = cgReturnNoURL;
             goto finish;
         }
         if (settings.printHelp || settings.printVersion) {
@@ -175,7 +175,7 @@ int main(int argc, const char * argv[]) {
                 [options printHelp];
             }
             if (parser.arguments.count) {
-                returnCode = cgr_metadata_and_url;
+                returnCode = cgReturnMetadataAndURL;
             }
             goto finish;
         }
@@ -199,17 +199,17 @@ int main(int argc, const char * argv[]) {
                     // To-do: Is there a way to find out if a backup file was needed and created?
                 } else {
                     gbfprintln(stderr, @"Error, copying: %@", error.localizedDescription);
-                    returnCode = cgr_copying_fail;
+                    returnCode = cgReturnCopyingFail;
                 }
             } else {
                 gbfprintln(stderr, @"Error, downloading: %@", error.localizedDescription);
-                returnCode = cgr_downloading_fail;
+                returnCode = cgReturnDownloadingFail;
             }
             shouldExit = YES;
         }];
 
         if (!task) {
-            returnCode = cgr_initialization_fail;
+            returnCode = cgReturnInitializationFail;
             goto finish;
         }
         [task resume];
