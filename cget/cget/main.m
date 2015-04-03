@@ -25,8 +25,17 @@ typedef NS_ENUM(int, CgReturnCodes) {
     cgr_no_url,  ///< No URL was given.
     cgr_initialization_fail,  ///< A work object could not be allocated or initialized.
     cgr_downloading_fail,  ///< Downloading of a target URL could not be completed.
-    cgr_copying_fail  ///< A downloaded file could not be moved to the designated directory.
+    cgr_copying_fail,  ///< A downloaded file could not be moved to the designated directory.
+    cgr_metadata_and_url  ///< A "print and exit" option and a URL were both provided.
 };
+
+// Long option strings
+static NSString * const  cgHelpOptionName = @"help";
+static NSString * const  cgVersionOptionName = @"version";
+
+// Settings domains
+static NSString * const  cgFactorySettingsName = @"Factory";
+static NSString * const  cgCommandLineSettingsName = @"Command Line";
 
 #pragma mark - Support functions
 
@@ -72,22 +81,110 @@ NSString *  CgBackupFilename(NSString *originalFilename) {
     return [[NSString stringWithFormat:@"%@.%@.old", originalFilename.stringByDeletingPathExtension, [NSUUID UUID].UUIDString] stringByAppendingPathExtension:originalFilename.pathExtension];
 }
 
+#pragma mark - Program settings
+
+/// Additionally handle program-specific settings
+@interface GBSettings (CgSettings)
+@property (nonatomic, assign) BOOL printHelp;     ///< Display the help text.
+@property (nonatomic, assign) BOOL printVersion;  ///< Display the version information.
+@end
+
+@implementation GBSettings (CgSettings)
+
+GB_SYNTHESIZE_BOOL(printHelp, setPrintHelp, cgHelpOptionName)
+GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
+
+/// Initialize the default state for properties set in the factory settings domain.
+- (void)applyFactoryDefaults {
+    self.printHelp = NO;
+    self.printVersion = NO;
+}
+
+@end
+
+#pragma mark - Main class
+
+/// Handles the main logic of the program
+@interface CGetter : NSObject
+
+/// @return A configuration object with the program's settings.
++ (GBSettings *)generateSettings;
+/// @return A configuration object with the program's options.
++ (GBOptionsHelper *)generateOptions;
+
+@end
+
+@implementation CGetter
+
++ (GBSettings *)generateSettings {
+    GBSettings * const  factoryDefaults = [GBSettings settingsWithName:cgFactorySettingsName parent:nil];
+
+    NSAssert(factoryDefaults, @"The factory default settings failed to initialize");
+    [factoryDefaults applyFactoryDefaults];
+    return [GBSettings settingsWithName:cgCommandLineSettingsName parent:factoryDefaults];
+}
+
++ (GBOptionsHelper *)generateOptions {
+    GBOptionsHelper * const  options = [GBOptionsHelper new];
+
+    if (options) {
+        [options registerOption:'?' long:cgHelpOptionName description:@"Display this help and exit" flags:GBOptionNoValue];
+        [options registerOption:0 long:cgVersionOptionName description:@"Display version data and exit" flags:GBOptionNoValue];
+
+        options.printHelpHeader = ^{ return @"Usage: %APPNAME OPTIONS|URL"; };
+
+        options.applicationVersion = ^{ return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"]; };
+        options.applicationBuild = ^{ return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"]; };
+    }
+    return options;
+}
+
+@end
+
 #pragma mark - Main function
 
 int main(int argc, const char * argv[]) {
     __block int  returnCode = cgr_success;
 
-    if (argc != 2) {
-        gbfprintln(stderr, @"Usage: %s URL", argv[0]);
-        returnCode = cgr_no_url;
-        goto finish;
-    }
-
     @autoreleasepool {
+        // Process the command-line arguments.
+        GBSettings * const         settings = [CGetter generateSettings];
+        GBOptionsHelper * const     options = [CGetter generateOptions];
+        GBCommandLineParser * const  parser = [GBCommandLineParser new];
+
+        if (!settings || !options || !parser) {
+            gbfprintln(stderr, @"Error, initialization: command-line parser");
+            returnCode = cgr_initialization_fail;
+            goto finish;
+        }
+        [parser registerSettings:settings];
+        [parser registerOptions:options];
+        [parser parseOptionsWithArguments:(char **)argv count:argc];
+
+        // Must have a URL or a metadata (version or help text) request, but not both.
+        if (argc <= 1) {
+            [options printHelp];
+            returnCode = cgr_no_url;
+            goto finish;
+        }
+        if (settings.printHelp || settings.printVersion) {
+            if (settings.printVersion) {
+                [options printVersion];
+            }
+            if (settings.printHelp) {
+                [options printHelp];
+            }
+            if (parser.arguments.count) {
+                returnCode = cgr_metadata_and_url;
+            }
+            goto finish;
+        }
+
+        // Download URLs with NSURLSession, requiring a run loop.
         __block BOOL                shouldExit = NO;
         NSRunLoop * const              runLoop = [NSRunLoop currentRunLoop];
         NSURLSession * const           session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration] delegate:nil delegateQueue:[NSOperationQueue mainQueue]];
-        NSURLSessionDownloadTask * const  task = [session downloadTaskWithURL:[NSURL URLWithString:[NSString stringWithUTF8String:argv[1]]] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        NSURLSessionDownloadTask * const  task = [session downloadTaskWithURL:[NSURL URLWithString:parser.arguments.firstObject] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
             if (!error) {
                 NSCParameterAssert(location);
                 NSCParameterAssert(response);
