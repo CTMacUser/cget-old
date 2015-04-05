@@ -164,8 +164,8 @@ GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
     GBOptionsHelper * const  options = [GBOptionsHelper new];
 
     if (options) {
-        [options registerOption:'?' long:cgHelpOptionName description:@"Display this help and exit" flags:GBOptionNoValue];
-        [options registerOption:0 long:cgVersionOptionName description:@"Display version data and exit" flags:GBOptionNoValue];
+        [options registerOption:'h' long:cgHelpOptionName description:@"Display this help and exit" flags:GBOptionNoValue];
+        [options registerOption:'V' long:cgVersionOptionName description:@"Display version data and exit" flags:GBOptionNoValue];
 
         options.printHelpHeader = ^{ return @"Usage: %APPNAME OPTIONS|URL"; };
 
