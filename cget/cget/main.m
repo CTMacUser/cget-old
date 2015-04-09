@@ -38,6 +38,14 @@ static NSString * const  cgVersionOptionName = @"version";
 static NSString * const  cgFactorySettingsName = @"Factory";
 static NSString * const  cgCommandLineSettingsName = @"Command Line";
 
+// Download task information dictionary keys
+static NSString * const  cgTaskInfoUrlString = @"urlString";        // NSString
+static NSString * const  cgTaskInfoResultURL = @"resultURL";        // NSURL, file-reference
+static NSString * const  cgTaskInfoResultErr = @"resultErr";        // NSError
+static NSString * const  cgTaskInfoMovedFile = @"oldFile";          // NSURL, file-reference
+static NSString * const  cgTaskInfoFailDownload = @"failDownload";  // NSNumber, BOOL
+static NSString * const  cgTaskInfoFailCopying = @"failCopying";    // NSNumber, BOOL
+
 #pragma mark - Support functions
 
 /**
@@ -113,39 +121,33 @@ GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
 /// @return A configuration object with the program's options.
 + (GBOptionsHelper *)generateOptions;
 
-/// The result, file-reference URL or error, of the download task.
-@property (nonatomic, readonly) id  result;
-/// Changes to YES after the URL has either been downloaded or erred out.
-@property (nonatomic, assign, getter=isFinished) BOOL  finished;
-/// Set if the task failed, and did so during the file-downloading phase.
-@property (nonatomic, assign, readonly) BOOL  failedDuringDownload;
-/// Set if the task failed, and did so during the file-copying phase.
-@property (nonatomic, assign, readonly) BOOL  failedDuringCopying;
+/// The task objects to download each submitted URL. Each element is a NSURLSesssionDownloadTask.
+@property (nonatomic, readonly) NSArray *                           tasks;
+/// The result, file-reference URL or error, and other data for each task. Keys are the elements of `tasks`, values are NSDictionary objects with the various discovered data. See the "cgTaskInfo..." constants for details of the inner pairs.
+@property (nonatomic, readonly) NSDictionary *                    results;
+/// Changes to YES after all URLs have either been downloaded or erred out.
+@property (nonatomic, readonly, assign, getter=isFinished) BOOL  finished;
 
 /**
     @brief Create a URL-downloading object.
-    @param urlString  The URL to download, in string form.
-    @param configuration  Configuration data for the `session` property.
+    @param urlStrings  An array of URLs to download, each as a `NSString`.
+    @param configuration  Configuration data for `session` property.
     @return The created instance.
-    @since 0.2
+    @since 0.3
 
-    A session will be created with the given configuration, the returned object as the delegate, and the main thread as the operation queue. A download task will be created with the URL contained in the given string.
+    A session will be created with the given configuration, the returned object as its delegate, and the main thread as its operation queue. Download tasks will be created, with a URL extracted from each given string.
  */
-+ (instancetype)createDownloaderFromURLString:(NSString *)urlString sessionConfiguration:(NSURLSessionConfiguration *)configuration;
-/// Call the `resume` method on the contained task.
++ (instancetype)createDownloaderFromURLStrings:(NSArray *)urlStrings sessionConfiguration:(NSURLSessionConfiguration *)configuration;
+/// Call the `resume` method on the contained tasks.
 - (void)resume;
 
 @end
 
 @interface CGetter ()
-@property (nonatomic, readwrite) id  result;
-@property (nonatomic, assign, readwrite) BOOL  failedDuringDownload;
-@property (nonatomic, assign, readwrite) BOOL  failedDuringCopying;
-
 /// The manager for the download sessions.
-@property (nonatomic) NSURLSession *  session;
-/// Downloads the desired URL.
-@property (nonatomic) NSURLSessionDownloadTask *  task;
+@property (nonatomic) NSURLSession *        session;
+/// The number of completed tasks.
+@property (nonatomic, assign) NSUInteger  doneTasks;
 @end
 
 @implementation CGetter
@@ -167,7 +169,7 @@ GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
         [options registerOption:'h' long:cgHelpOptionName description:@"Display this help and exit" flags:GBOptionNoValue];
         [options registerOption:'V' long:cgVersionOptionName description:@"Display version data and exit" flags:GBOptionNoValue];
 
-        options.printHelpHeader = ^{ return @"Usage: %APPNAME OPTIONS|URL"; };
+        options.printHelpHeader = ^{ return @"Usage: %APPNAME OPTIONS | URL..."; };
 
         options.applicationVersion = ^{ return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"]; };
         options.applicationBuild = ^{ return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"]; };
@@ -178,42 +180,74 @@ GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
 #pragma mark Properties
 
 - (BOOL)isFinished {
-    return self.result != nil;
+    for (NSURLSessionDownloadTask *task in self.tasks) {
+        if (task.state != NSURLSessionTaskStateCompleted) {
+            return NO;
+        }
+    }
+    return YES;
 }
 
 #pragma mark Initialization and regular methods
 
-+ (instancetype)createDownloaderFromURLString:(NSString *)urlString
-                         sessionConfiguration:(NSURLSessionConfiguration *)configuration {
-    NSURL * const               url = [NSURL URLWithString:urlString];  // Implied NIL check on urlString
-    CGetter * const      downloader = [self new];
-    NSOperationQueue * const  queue = [NSOperationQueue mainQueue];
+/// @return This instance, after initializing containers and such.
+- (instancetype)init {
+    if (self = [super init]) {
+        _tasks = [NSMutableArray new];
+        _results = [NSMutableDictionary new];
+        _session = nil;
+        _doneTasks = 0;
 
-    if (configuration && url && downloader && queue) {
-        if ((downloader.session = [NSURLSession sessionWithConfiguration:configuration delegate:downloader delegateQueue:queue])) {
-            if ((downloader.task = [downloader.session downloadTaskWithURL:url])) {
-                return downloader;
-            }
+        if (!_tasks || !_results) {
+            return nil;
         }
     }
-    return nil;
+    return self;
+}
+
++ (instancetype)createDownloaderFromURLStrings:(NSArray *)urlStrings
+                          sessionConfiguration:(NSURLSessionConfiguration *)configuration {
+    CGetter * const      downloader = [self new];
+    NSOperationQueue * const  queue = [NSOperationQueue mainQueue];
+    id const                   keys = [NSDictionary sharedKeySetForKeys:@[cgTaskInfoUrlString, cgTaskInfoResultURL, cgTaskInfoResultErr, cgTaskInfoMovedFile, cgTaskInfoFailDownload, cgTaskInfoFailCopying]];
+
+    if (!urlStrings || !configuration || !downloader || !queue || !keys) {
+        return nil;
+    }
+    if (!(downloader.session = [NSURLSession sessionWithConfiguration:configuration delegate:downloader delegateQueue:queue])) {
+        return nil;
+    };
+    for (NSString *urlString in urlStrings) {
+        NSURL * const                      url = [NSURL URLWithString:urlString];
+        NSMutableDictionary * const  taskBlock = [NSMutableDictionary dictionaryWithSharedKeySet:keys];
+
+        if (!url || !taskBlock) {
+            return nil;
+        }
+        [taskBlock setObject:urlString forKey:cgTaskInfoUrlString];
+        [(NSMutableArray *)downloader.tasks addObject:[downloader.session downloadTaskWithURL:url]];
+        [(NSMutableDictionary *)downloader.results setObject:taskBlock forKey:downloader.tasks.lastObject];
+    }
+    return downloader;
 }
 
 - (void)resume {
-    [self.task resume];
+    for (NSURLSessionDownloadTask *task in self.tasks) {
+        [task resume];
+    }
 }
 
 #pragma mark Delegate methods
 
-- (void)        URLSession:(NSURLSession *)session
-              downloadTask:(NSURLSessionDownloadTask *)downloadTask
- didFinishDownloadingToURL:(NSURL *)location {
+- (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask
+                              didFinishDownloadingToURL:(NSURL *)location {
     NSAssert(session == self.session, @"Given session (%@) isn't the one (%@) owned by this object (%@)", session, self.session, self);
-    NSAssert(downloadTask == self.task, @"Given task (%@) isn't the one (%@) owned by this object (%@)", downloadTask, self.task, self);
+    NSAssert([self.tasks containsObject:downloadTask], @"Given task (%@) isn't one owned by this object (%@)", downloadTask, self);
 
-    NSURL * const  plannedDestination = [NSURL fileURLWithPath:downloadTask.response.suggestedFilename isDirectory:NO];
-    NSURL *        stagedLocation = nil;
-    NSError *      error = nil;
+    NSMutableDictionary * const  taskBlock = self.results[downloadTask];
+    NSURL * const       plannedDestination = [NSURL fileURLWithPath:downloadTask.response.suggestedFilename isDirectory:NO];
+    NSURL *             stagedLocation = nil;
+    NSError *           error = nil;
 
     NSAssert(plannedDestination, @"Creating destination URL failed");
     if (CgMoveFileToDestinationTemporaryDirectory(location, plannedDestination, &stagedLocation, &error)) {
@@ -223,25 +257,34 @@ GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
 
         NSAssert(locationReference, @"Creating file-reference URL to downloaded file failed");
         if ([[NSFileManager defaultManager] replaceItemAtURL:plannedDestination withItemAtURL:stagedLocation backupItemName:backupName options:(NSFileManagerItemReplacementUsingNewMetadataOnly | NSFileManagerItemReplacementWithoutDeletingBackupItem) resultingItemURL:&actualDestination error:&error]) {
-            self.result = locationReference;
+            NSURL * const  oldBackupFile = [actualDestination fileReferenceURL];
 
-            // Discovered that [actualDestination fileReferenceURL] returns a pointer to the backed-up file!
-            // Maybe that can be used to flag moved around files.
+            taskBlock[cgTaskInfoResultURL] = locationReference;
+            if (oldBackupFile) {
+                taskBlock[cgTaskInfoMovedFile] = oldBackupFile;  // No use for this yet.
+            }
             return;
         }
     }
-    self.result = error;
-    self.failedDuringCopying = YES;
+
+    taskBlock[cgTaskInfoResultErr] = error;
+    taskBlock[cgTaskInfoFailCopying] = @YES;
 }
 
-- (void)   URLSession:(NSURLSession *)session
-                 task:(NSURLSessionTask *)task
- didCompleteWithError:(NSError *)error {
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
+                           didCompleteWithError:(NSError *)error {
     NSAssert(session == self.session, @"Given session (%@) isn't the one (%@) owned by this object (%@)", session, self.session, self);
-    NSAssert(task == (NSURLSessionTask *)self.task, @"Given task (%@) isn't the one (%@) owned by this object (%@)", task, self.task, self);
+    NSAssert([self.tasks containsObject:task], @"Given task (%@) isn't one owned by this object (%@)", task, self);
 
-    self.result = error;
-    self.failedDuringDownload = YES;
+    if (error) {
+        NSMutableDictionary * const  taskBlock = self.results[task];
+
+        taskBlock[cgTaskInfoResultErr] = error;
+        taskBlock[cgTaskInfoFailDownload] = @YES;
+    }
+    if (++self.doneTasks >= self.tasks.count) {
+        [self.session performSelector:@selector(finishTasksAndInvalidate) withObject:nil afterDelay:0.0];
+    }
 }
 
 @end
@@ -296,7 +339,7 @@ int main(int argc, const char * argv[]) {
 
         // Download URLs with NSURLSession, requiring a run loop.
         NSRunLoop * const   runLoop = [NSRunLoop currentRunLoop];
-        CGetter * const  downloader = [CGetter createDownloaderFromURLString:parser.arguments.firstObject sessionConfiguration:configuration];
+        CGetter * const  downloader = [CGetter createDownloaderFromURLStrings:parser.arguments sessionConfiguration:configuration];
 
         if (!runLoop || !downloader) {
             gbfprintln(stderr, @"Error, initialization: run loop or action object");
@@ -308,27 +351,37 @@ int main(int argc, const char * argv[]) {
             ;
 
         // Handle the result
-        if ([downloader.result isKindOfClass:[NSURL class]]) {
-            NSURL * const  url = downloader.result;
+        NSUInteger  errDownload = 0, errCopy = 0, errOther = 0;
 
-            gbprintln(@"%@", url.filePathURL.path);
-        } else if ([downloader.result isKindOfClass:[NSError class]]) {
-            NSError * const  error = downloader.result;
+        for (NSURLSessionDownloadTask *task in downloader.tasks) {
+            NSDictionary * const  result = downloader.results[task];
+            NSURL * const            url = result[cgTaskInfoResultURL];
+            NSError * const        error = result[cgTaskInfoResultErr];
+            BOOL const  failedAtDownload = [(NSNumber *)result[cgTaskInfoFailDownload] boolValue];
+            BOOL const   failedAtCopying = [(NSNumber *)result[cgTaskInfoFailCopying] boolValue];
 
-            if (downloader.failedDuringDownload) {
-                gbfprintln(stderr, @"Error, downloading: %@", error.localizedDescription);
-                returnCode = cgReturnDownloadingFail;
-            } else if (downloader.failedDuringCopying) {
-                gbfprintln(stderr, @"Error, copying: %@", error.localizedDescription);
-                returnCode = cgReturnCopyingFail;
+            if (url) {
+                gbprintln(@"%@", url.filePathURL.path);
+            } else if (error) {
+                gbprintln(@"#");  // Indicate this task failed; useful when only standard output is read
+
+                if (failedAtDownload) {
+                    gbfprintln(stderr, @"Error, downloading: %@", error.localizedDescription);
+                    ++errDownload;
+                } else if (failedAtCopying) {
+                    gbfprintln(stderr, @"Error, copying: %@", error.localizedDescription);
+                    ++errCopy;
+                } else {
+                    gbfprintln(stderr, @"Error: %@", error.localizedDescription);
+                    ++errOther;
+                }
             } else {
-                gbfprintln(stderr, @"Error: %@", error.localizedDescription);
-                returnCode = cgReturnUnknownFail;
+                gbprintln(@"#");
+                gbfprintln(stderr, @"Error, unknown");
+                ++errOther;
             }
-        } else {
-            gbfprintln(stderr, @"Error, unknown");
-            returnCode = cgReturnUnknownFail;
         }
+        returnCode = errDownload ? cgReturnDownloadingFail : errCopy ? cgReturnCopyingFail : errOther ? cgReturnUnknownFail : cgReturnSuccess;
     }
 
 finish:
