@@ -33,6 +33,7 @@ typedef NS_ENUM(int, CgReturnCodes) {
 // Long option strings
 static NSString * const  cgHelpOptionName = @"help";
 static NSString * const  cgVersionOptionName = @"version";
+static NSString * const  cgSuppressHashOptionName = @"suppress-placeholder";
 
 // Settings domains
 static NSString * const  cgFactorySettingsName = @"Factory";
@@ -96,17 +97,20 @@ NSString *  CgBackupFilename(NSString *originalFilename) {
 @interface GBSettings (CgSettings)
 @property (nonatomic, assign) BOOL printHelp;     ///< Display the help text.
 @property (nonatomic, assign) BOOL printVersion;  ///< Display the version information.
+@property (nonatomic, assign) BOOL noPrintHash;   ///< Print nothing, instead of '#', to stdout on failed downloads.
 @end
 
 @implementation GBSettings (CgSettings)
 
 GB_SYNTHESIZE_BOOL(printHelp, setPrintHelp, cgHelpOptionName)
 GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
+GB_SYNTHESIZE_BOOL(noPrintHash, setNoPrintHash, cgSuppressHashOptionName)
 
 /// Initialize the default state for properties set in the factory settings domain.
 - (void)applyFactoryDefaults {
     self.printHelp = NO;
     self.printVersion = NO;
+    self.noPrintHash = NO;
 }
 
 @end
@@ -168,8 +172,10 @@ GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
     if (options) {
         [options registerOption:'h' long:cgHelpOptionName description:@"Display this help and exit" flags:GBOptionNoValue];
         [options registerOption:'V' long:cgVersionOptionName description:@"Display version data and exit" flags:GBOptionNoValue];
+        [options registerOption:'#' long:cgSuppressHashOptionName description:@"Prints nothing to standard output, instead of \"#\", when a download fails (Defaults to OFF)" flags:GBOptionNoValue];
 
-        options.printHelpHeader = ^{ return @"Usage: %APPNAME OPTIONS | URL..."; };
+        options.printHelpHeader = ^{ return @"Usage: %APPNAME [OPTIONS] [URL...]"; };
+        options.printHelpFooter = ^{ return @"\nWhen not printing help and/or version text, at least one URL must be present."; };
 
         options.applicationVersion = ^{ return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"]; };
         options.applicationBuild = ^{ return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"]; };
@@ -362,23 +368,27 @@ int main(int argc, const char * argv[]) {
 
             if (url) {
                 gbprintln(@"%@", url.filePathURL.path);
-            } else if (error) {
-                gbprintln(@"#");  // Indicate this task failed; useful when only standard output is read
+            } else {
+                if (!settings.noPrintHash) {
+                    // When matching to each input URL, and a URL fails to download, this replaces the output file path.
+                    gbprintln(@"#");
+                }
 
-                if (failedAtDownload) {
-                    gbfprintln(stderr, @"Error, downloading: %@", error.localizedDescription);
-                    ++errDownload;
-                } else if (failedAtCopying) {
-                    gbfprintln(stderr, @"Error, copying: %@", error.localizedDescription);
-                    ++errCopy;
+                if (error) {
+                    if (failedAtDownload) {
+                        gbfprintln(stderr, @"Error, downloading: %@", error.localizedDescription);
+                        ++errDownload;
+                    } else if (failedAtCopying) {
+                        gbfprintln(stderr, @"Error, copying: %@", error.localizedDescription);
+                        ++errCopy;
+                    } else {
+                        gbfprintln(stderr, @"Error: %@", error.localizedDescription);
+                        ++errOther;
+                    }
                 } else {
-                    gbfprintln(stderr, @"Error: %@", error.localizedDescription);
+                    gbfprintln(stderr, @"Error, unknown");
                     ++errOther;
                 }
-            } else {
-                gbprintln(@"#");
-                gbfprintln(stderr, @"Error, unknown");
-                ++errOther;
             }
         }
         returnCode = errDownload ? cgReturnDownloadingFail : errCopy ? cgReturnCopyingFail : errOther ? cgReturnUnknownFail : cgReturnSuccess;
