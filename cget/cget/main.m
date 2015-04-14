@@ -27,13 +27,16 @@ typedef NS_ENUM(int, CgReturnCodes) {
     cgReturnInitializationFail,  ///< A work object could not be allocated or initialized.
     cgReturnDownloadingFail,  ///< Downloading of a target URL could not be completed.
     cgReturnCopyingFail,  ///< A downloaded file could not be moved to the designated directory.
-    cgReturnMetadataAndURL  ///< A "print and exit" option and a URL were both provided.
+    cgReturnMetadataAndURL,  ///< A "print and exit" option and a URL were both provided.
+    cgReturnBadInputFile,  ///< An input file (holding URLs) could not be opened.
+    cgReturnBadInputRead  ///< An input file (holding URLs) was found but could not be read.
 };
 
 // Long option strings
 static NSString * const  cgHelpOptionName = @"help";
 static NSString * const  cgVersionOptionName = @"version";
 static NSString * const  cgSuppressHashOptionName = @"suppress-placeholder";
+static NSString * const  cgInputFileOptionName = @"input-file";
 
 // Settings domains
 static NSString * const  cgFactorySettingsName = @"Factory";
@@ -98,6 +101,8 @@ NSString *  CgBackupFilename(NSString *originalFilename) {
 @property (nonatomic, assign) BOOL printHelp;     ///< Display the help text.
 @property (nonatomic, assign) BOOL printVersion;  ///< Display the version information.
 @property (nonatomic, assign) BOOL noPrintHash;   ///< Print nothing, instead of '#', to stdout on failed downloads.
+
+@property (nonatomic, copy) id  urlInputFile;  ///< File (path as NSString), or stdin (NSNumber BOOL YES), to read URLs from.
 @end
 
 @implementation GBSettings (CgSettings)
@@ -105,6 +110,7 @@ NSString *  CgBackupFilename(NSString *originalFilename) {
 GB_SYNTHESIZE_BOOL(printHelp, setPrintHelp, cgHelpOptionName)
 GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
 GB_SYNTHESIZE_BOOL(noPrintHash, setNoPrintHash, cgSuppressHashOptionName)
+GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgInputFileOptionName)
 
 /// Initialize the default state for properties set in the factory settings domain.
 - (void)applyFactoryDefaults {
@@ -173,9 +179,10 @@ GB_SYNTHESIZE_BOOL(noPrintHash, setNoPrintHash, cgSuppressHashOptionName)
         [options registerOption:'h' long:cgHelpOptionName description:@"Display this help and exit" flags:GBOptionNoValue];
         [options registerOption:'V' long:cgVersionOptionName description:@"Display version data and exit" flags:GBOptionNoValue];
         [options registerOption:'#' long:cgSuppressHashOptionName description:@"Prints nothing to standard output, instead of \"#\", when a download fails (Defaults to OFF)" flags:GBOptionNoValue];
+        [options registerOption:'i' long:cgInputFileOptionName description:@"Download the additional URLs listed in the given file, or standard input if the file path is omitted (Defaults to no additional reading)" flags:GBOptionOptionalValue];
 
         options.printHelpHeader = ^{ return @"Usage: %APPNAME [OPTIONS] [URL...]"; };
-        options.printHelpFooter = ^{ return @"\nWhen not printing help and/or version text, at least one URL must be present."; };
+        options.printHelpFooter = ^{ return @"\nWhen not printing help and/or version text, at least one URL should be submitted as an argument and/or any number though an input file (or standard input)."; };
 
         options.applicationVersion = ^{ return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"]; };
         options.applicationBuild = ^{ return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"]; };
@@ -233,6 +240,10 @@ GB_SYNTHESIZE_BOOL(noPrintHash, setNoPrintHash, cgSuppressHashOptionName)
         [taskBlock setObject:urlString forKey:cgTaskInfoUrlString];
         [(NSMutableArray *)downloader.tasks addObject:[downloader.session downloadTaskWithURL:url]];
         [(NSMutableDictionary *)downloader.results setObject:taskBlock forKey:downloader.tasks.lastObject];
+    }
+    if (!downloader.tasks.count) {
+        // No tasks -> no way to finish a session (after the last task) -> kill the session early
+        downloader.session = nil;
     }
     return downloader;
 }
@@ -315,8 +326,9 @@ int main(int argc, const char * argv[]) {
         [parser registerOptions:options];
         [parser parseOptionsWithArguments:(char **)argv count:argc];
 
-        // Must have a URL or a metadata (version or help text) request, but not both.
+        // Print version information and/or help text. Cannot also have a URL request.
         if (argc <= 1) {
+            // Since the help print-out goes to stdout, we must return a non-success code so a script can check it and make sure not to interpret the text as the normal output (a list of file paths of the downloads). To safely submit a list of URLs that may be empty, use the input-file option.
             [options printHelp];
             returnCode = cgReturnNoURL;
             goto finish;
@@ -328,10 +340,58 @@ int main(int argc, const char * argv[]) {
             if (settings.printHelp) {
                 [options printHelp];
             }
-            if (parser.arguments.count) {
+            if (parser.arguments.count || settings.urlInputFile) {
                 returnCode = cgReturnMetadataAndURL;
             }
             goto finish;
+        }
+
+        // Check for a file to read URLs from. Can be standard-input instead.
+        NSFileHandle *  inputFile = nil;
+
+        if ([settings.urlInputFile isKindOfClass:[NSString class]]) {
+            NSString * const  inputFilePathString = settings.urlInputFile;
+            NSError *         error = nil;
+
+            inputFile = [NSFileHandle fileHandleForReadingFromURL:[NSURL fileURLWithPath:inputFilePathString.stringByExpandingTildeInPath] error:&error];
+            if (!inputFile) {
+                gbfprintln(stderr, @"Error, checking for input file: %@", error.localizedDescription);
+                returnCode = cgReturnBadInputFile;
+                goto finish;
+            }
+        } else if ([settings.urlInputFile isKindOfClass:[NSNumber class]]) {
+            NSCAssert([settings.urlInputFile boolValue], @"Should have gotten @YES");
+            inputFile = [NSFileHandle fileHandleWithStandardInput];
+        }
+
+        // Now scan the input for any URLs.
+        NSMutableArray * const  inputFileURLs = [parser.arguments mutableCopy];
+
+        if (inputFile) {
+            NSString * const     inputFileString = [[NSString alloc] initWithData:[inputFile readDataToEndOfFile]
+                                                                         encoding:NSUTF8StringEncoding];
+            NSError *               error = inputFileString ? nil : [NSError errorWithDomain:NSCocoaErrorDomain
+                                                                                        code:NSFileReadUnknownError
+                                                                                    userInfo:nil];
+            NSDataDetector * const  linkDetector = error ? nil : [NSDataDetector dataDetectorWithTypes:NSTextCheckingTypeLink
+                                                                                                 error:&error];
+
+            if (error) {
+                gbfprintln(stderr, [NSString stringWithFormat:@"Error, reading %@:%%@", inputFile == [NSFileHandle fileHandleWithStandardInput] ? @"standard input" : @"input file"], error.localizedDescription);
+                returnCode = cgReturnBadInputRead;
+                goto finish;
+            }
+            [linkDetector enumerateMatchesInString:inputFileString
+                                           options:kNilOptions
+                                             range:NSMakeRange(0, inputFileString.length)
+                                        usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags, BOOL *stop) {
+                switch (result.resultType) {
+                    case NSTextCheckingTypeLink:
+                        [inputFileURLs addObject:result.URL.absoluteString];
+                    default:
+                        break;
+                }
+            }];
         }
 
         // Set up the session with configuration data. (None for now.)
@@ -345,7 +405,7 @@ int main(int argc, const char * argv[]) {
 
         // Download URLs with NSURLSession, requiring a run loop.
         NSRunLoop * const   runLoop = [NSRunLoop currentRunLoop];
-        CGetter * const  downloader = [CGetter createDownloaderFromURLStrings:parser.arguments sessionConfiguration:configuration];
+        CGetter * const  downloader = [CGetter createDownloaderFromURLStrings:inputFileURLs sessionConfiguration:configuration];
 
         if (!runLoop || !downloader) {
             gbfprintln(stderr, @"Error, initialization: run loop or action object");
