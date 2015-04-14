@@ -43,7 +43,7 @@ static NSString * const  cgFactorySettingsName = @"Factory";
 static NSString * const  cgCommandLineSettingsName = @"Command Line";
 
 // Download task information dictionary keys
-static NSString * const  cgTaskInfoUrlString = @"urlString";        // NSString
+static NSString * const  cgTaskInfoUrl = @"url";                    // NSURL
 static NSString * const  cgTaskInfoResultURL = @"resultURL";        // NSURL, file-reference
 static NSString * const  cgTaskInfoResultErr = @"resultErr";        // NSError
 static NSString * const  cgTaskInfoMovedFile = @"oldFile";          // NSURL, file-reference
@@ -140,14 +140,14 @@ GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgInputFileOptionName)
 
 /**
     @brief Create a URL-downloading object.
-    @param urlStrings  An array of URLs to download, each as a `NSString`.
+    @param urls  An array of URLs to download, each as a `NSURL`.
     @param configuration  Configuration data for `session` property.
     @return The created instance.
     @since 0.3
 
-    A session will be created with the given configuration, the returned object as its delegate, and the main thread as its operation queue. Download tasks will be created, with a URL extracted from each given string.
+    A session will be created with the given configuration, the returned object as its delegate, and the main thread as its operation queue. Download tasks will be created, one for each given URL.
  */
-+ (instancetype)createDownloaderFromURLStrings:(NSArray *)urlStrings sessionConfiguration:(NSURLSessionConfiguration *)configuration;
++ (instancetype)createDownloaderFromURLs:(NSArray *)urls sessionConfiguration:(NSURLSessionConfiguration *)configuration;
 /// Call the `resume` method on the contained tasks.
 - (void)resume;
 
@@ -218,26 +218,21 @@ GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgInputFileOptionName)
     return self;
 }
 
-+ (instancetype)createDownloaderFromURLStrings:(NSArray *)urlStrings
-                          sessionConfiguration:(NSURLSessionConfiguration *)configuration {
-    CGetter * const      downloader = [self new];
-    NSOperationQueue * const  queue = [NSOperationQueue mainQueue];
-    id const                   keys = [NSDictionary sharedKeySetForKeys:@[cgTaskInfoUrlString, cgTaskInfoResultURL, cgTaskInfoResultErr, cgTaskInfoMovedFile, cgTaskInfoFailDownload, cgTaskInfoFailCopying]];
++ (instancetype)createDownloaderFromURLs:(NSArray *)urls
+                    sessionConfiguration:(NSURLSessionConfiguration *)configuration {
+    NSParameterAssert(urls);
+    NSParameterAssert(configuration);
 
-    if (!urlStrings || !configuration || !downloader || !queue || !keys) {
-        return nil;
-    }
-    if (!(downloader.session = [NSURLSession sessionWithConfiguration:configuration delegate:downloader delegateQueue:queue])) {
-        return nil;
-    };
-    for (NSString *urlString in urlStrings) {
-        NSURL * const                      url = [NSURL URLWithString:urlString];
+    CGetter * const  downloader = [self new];
+    id const         keys = [NSDictionary sharedKeySetForKeys:@[cgTaskInfoUrl, cgTaskInfoResultURL, cgTaskInfoResultErr, cgTaskInfoMovedFile, cgTaskInfoFailDownload, cgTaskInfoFailCopying]];
+
+    downloader.session = [NSURLSession sessionWithConfiguration:configuration
+                                                       delegate:downloader
+                                                  delegateQueue:[NSOperationQueue mainQueue]];
+    for (NSURL *url in urls) {
         NSMutableDictionary * const  taskBlock = [NSMutableDictionary dictionaryWithSharedKeySet:keys];
 
-        if (!url || !taskBlock) {
-            return nil;
-        }
-        [taskBlock setObject:urlString forKey:cgTaskInfoUrlString];
+        [taskBlock setObject:url forKey:cgTaskInfoUrl];
         [(NSMutableArray *)downloader.tasks addObject:[downloader.session downloadTaskWithURL:url]];
         [(NSMutableDictionary *)downloader.results setObject:taskBlock forKey:downloader.tasks.lastObject];
     }
@@ -364,9 +359,12 @@ int main(int argc, const char * argv[]) {
             inputFile = [NSFileHandle fileHandleWithStandardInput];
         }
 
-        // Now scan the input for any URLs.
-        NSMutableArray * const  inputFileURLs = [parser.arguments mutableCopy];
+        // Now scan the arguments and input for any URLs.
+        NSMutableArray * const  inputFileURLs = [NSMutableArray arrayWithCapacity:parser.arguments.count];
 
+        for (NSString *argument in parser.arguments) {
+            [inputFileURLs addObject:[NSURL URLWithString:argument]];
+        }
         if (inputFile) {
             NSString * const     inputFileString = [[NSString alloc] initWithData:[inputFile readDataToEndOfFile]
                                                                          encoding:NSUTF8StringEncoding];
@@ -387,7 +385,7 @@ int main(int argc, const char * argv[]) {
                                         usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags, BOOL *stop) {
                 switch (result.resultType) {
                     case NSTextCheckingTypeLink:
-                        [inputFileURLs addObject:result.URL.absoluteString];
+                        [inputFileURLs addObject:result.URL];
                     default:
                         break;
                 }
@@ -405,7 +403,7 @@ int main(int argc, const char * argv[]) {
 
         // Download URLs with NSURLSession, requiring a run loop.
         NSRunLoop * const   runLoop = [NSRunLoop currentRunLoop];
-        CGetter * const  downloader = [CGetter createDownloaderFromURLStrings:inputFileURLs sessionConfiguration:configuration];
+        CGetter * const  downloader = [CGetter createDownloaderFromURLs:inputFileURLs sessionConfiguration:configuration];
 
         if (!runLoop || !downloader) {
             gbfprintln(stderr, @"Error, initialization: run loop or action object");
