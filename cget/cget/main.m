@@ -29,7 +29,8 @@ typedef NS_ENUM(int, CgReturnCodes) {
     cgReturnCopyingFail,  ///< A downloaded file could not be moved to the designated directory.
     cgReturnMetadataAndURL,  ///< A "print and exit" option and a URL were both provided.
     cgReturnBadInputFile,  ///< An input file (holding URLs) could not be opened.
-    cgReturnBadInputRead  ///< An input file (holding URLs) was found but could not be read.
+    cgReturnBadInputRead,  ///< An input file (holding URLs) was found but could not be read.
+    cgReturnDirectoryFail  ///< An output directory could not be created.
 };
 
 // Long option strings
@@ -37,6 +38,13 @@ static NSString * const  cgHelpOptionName = @"help";
 static NSString * const  cgVersionOptionName = @"version";
 static NSString * const  cgSuppressHashOptionName = @"suppress-placeholder";
 static NSString * const  cgInputFileOptionName = @"input-file";
+static NSString * const  cgOptionNameOutputDocument = @"output-document";
+static NSString * const  cgOptionNameOutputAs = @"output-as";
+
+// "Option-as" values
+static NSString * const  cgOptionValueFile = @"file";
+static NSString * const  cgOptionValueFolder = @"folder";
+static NSString * const  cgOptionValueDirectory = @"directory";
 
 // Settings domains
 static NSString * const  cgFactorySettingsName = @"Factory";
@@ -102,7 +110,9 @@ NSString *  CgBackupFilename(NSString *originalFilename) {
 @property (nonatomic, assign) BOOL printVersion;  ///< Display the version information.
 @property (nonatomic, assign) BOOL noPrintHash;   ///< Print nothing, instead of '#', to stdout on failed downloads.
 
-@property (nonatomic, copy) id  urlInputFile;  ///< File (path as NSString), or stdin (NSNumber BOOL YES), to read URLs from.
+@property (nonatomic, copy) id          urlInputFile;     ///< File (path as NSString), or stdin (NSNumber BOOL YES), to read URLs from.
+@property (nonatomic, copy) NSString *  destinationName;  ///< File path (or simple name in current directory) for the downloaded file, overriding the default name. Will be directory when multiple URLs are downloaded.
+@property (nonatomic, copy) NSString *  useFileOrFolder;  ///< "file," "folder," or "directory": when `destinationName` is not NIL, force it to name either a file or directory, instead of the default of using single vs. multiple URLs.
 @end
 
 @implementation GBSettings (CgSettings)
@@ -111,6 +121,8 @@ GB_SYNTHESIZE_BOOL(printHelp, setPrintHelp, cgHelpOptionName)
 GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
 GB_SYNTHESIZE_BOOL(noPrintHash, setNoPrintHash, cgSuppressHashOptionName)
 GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgInputFileOptionName)
+GB_SYNTHESIZE_COPY(NSString *, destinationName, setDestinationName, cgOptionNameOutputDocument)
+GB_SYNTHESIZE_COPY(NSString *, useFileOrFolder, setUseFileOrFolder, cgOptionNameOutputAs)
 
 /// Initialize the default state for properties set in the factory settings domain.
 - (void)applyFactoryDefaults {
@@ -137,6 +149,9 @@ GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgInputFileOptionName)
 @property (nonatomic, readonly) NSDictionary *                    results;
 /// Changes to YES after all URLs have either been downloaded or erred out.
 @property (nonatomic, readonly, assign, getter=isFinished) BOOL  finished;
+
+/// When not `nil`, the downloaded file's name, overriding the default filename.
+@property (nonatomic, copy) NSString *  destinationFilename;
 
 /**
     @brief Create a URL-downloading object.
@@ -176,10 +191,15 @@ GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgInputFileOptionName)
     GBOptionsHelper * const  options = [GBOptionsHelper new];
 
     if (options) {
+        [options registerSeparator:@"Basic Startup Options"];
         [options registerOption:'h' long:cgHelpOptionName description:@"Display this help and exit" flags:GBOptionNoValue];
         [options registerOption:'V' long:cgVersionOptionName description:@"Display version data and exit" flags:GBOptionNoValue];
+        [options registerSeparator:@"Logging and Input File Options"];
         [options registerOption:'#' long:cgSuppressHashOptionName description:@"Prints nothing to standard output, instead of \"#\", when a download fails (Defaults to OFF)" flags:GBOptionNoValue];
         [options registerOption:'i' long:cgInputFileOptionName description:@"Download the additional URLs listed in the given file, or standard input if the file path is omitted (Defaults to no additional reading)" flags:GBOptionOptionalValue];
+        [options registerSeparator:@"Download Options"];
+        [options registerOption:'O' long:cgOptionNameOutputDocument description:@"Use the given name or path as the destination file (with one URL) or directory (with multiple URLs) for the downloaded file(s)" flags:GBOptionRequiredValue];
+        [options registerOption:0 long:cgOptionNameOutputAs description:@"When using the output document option, use 'file' to force the document path to be a file, and 'directory' or 'folder' to make it a directory (Defaults to using the number of URLs)" flags:GBOptionRequiredValue];
 
         options.printHelpHeader = ^{ return @"Usage: %APPNAME [OPTIONS] [URL...]"; };
         options.printHelpFooter = ^{ return @"\nWhen not printing help and/or version text, at least one URL should be submitted as an argument and/or any number though an input file (or standard input)."; };
@@ -208,6 +228,7 @@ GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgInputFileOptionName)
     if (self = [super init]) {
         _tasks = [NSMutableArray new];
         _results = [NSMutableDictionary new];
+        _destinationFilename = nil;
         _session = nil;
         _doneTasks = 0;
 
@@ -257,7 +278,7 @@ GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgInputFileOptionName)
     NSAssert([self.tasks containsObject:downloadTask], @"Given task (%@) isn't one owned by this object (%@)", downloadTask, self);
 
     NSMutableDictionary * const  taskBlock = self.results[downloadTask];
-    NSURL * const       plannedDestination = [NSURL fileURLWithPath:downloadTask.response.suggestedFilename isDirectory:NO];
+    NSURL * const       plannedDestination = [NSURL fileURLWithPath:(self.destinationFilename ?: downloadTask.response.suggestedFilename) isDirectory:NO];
     NSURL *             stagedLocation = nil;
     NSError *           error = nil;
 
@@ -392,6 +413,30 @@ int main(int argc, const char * argv[]) {
             }];
         }
 
+        // Change working directory for filename (or directory) override.
+        BOOL const  useOverrideAsFile = settings.useFileOrFolder && [cgOptionValueFile caseInsensitiveCompare:settings.useFileOrFolder] == NSOrderedSame;
+        BOOL const  useOverrideAsFolder = settings.useFileOrFolder && ([cgOptionValueFolder caseInsensitiveCompare:settings.useFileOrFolder] == NSOrderedSame || [cgOptionValueDirectory caseInsensitiveCompare:settings.useFileOrFolder] == NSOrderedSame);
+        BOOL const  useAsDirectory = useOverrideAsFile ? NO : useOverrideAsFolder ? YES : inputFileURLs.count > 1;
+        NSURL *   filenameOverride = settings.destinationName ? [NSURL fileURLWithPath:settings.destinationName.stringByExpandingTildeInPath isDirectory:useAsDirectory] : nil;
+
+        if (filenameOverride) {
+            NSError *      error = nil;
+            NSURL * const  workingDirectory = useAsDirectory ? filenameOverride : filenameOverride.URLByDeletingLastPathComponent;
+            NSFileManager * const   manager = [NSFileManager defaultManager];
+
+            if ([manager createDirectoryAtURL:workingDirectory withIntermediateDirectories:YES attributes:nil error:&error]) {
+                if (![manager changeCurrentDirectoryPath:workingDirectory.path]) {
+                    gbfprintln(stderr, @"Error, changing working directory failed");
+                    returnCode = cgReturnDirectoryFail;
+                    goto finish;
+                }
+            } else {
+                gbfprintln(stderr, @"Error, creating destination directory failed: %@", error.localizedDescription);
+                returnCode = cgReturnDirectoryFail;
+                goto finish;
+            }
+        }
+
         // Set up the session with configuration data. (None for now.)
         NSURLSessionConfiguration * const  configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
 
@@ -409,6 +454,9 @@ int main(int argc, const char * argv[]) {
             gbfprintln(stderr, @"Error, initialization: run loop or action object");
             returnCode = cgReturnInitializationFail;
             goto finish;
+        }
+        if (!useAsDirectory) {
+            downloader.destinationFilename = filenameOverride.lastPathComponent;
         }
         [downloader resume];
         while (!downloader.finished && [runLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]])
