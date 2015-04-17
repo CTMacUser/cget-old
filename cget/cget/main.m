@@ -34,10 +34,10 @@ typedef NS_ENUM(int, CgReturnCodes) {
 };
 
 // Long option strings
-static NSString * const  cgHelpOptionName = @"help";
-static NSString * const  cgVersionOptionName = @"version";
-static NSString * const  cgSuppressHashOptionName = @"suppress-placeholder";
-static NSString * const  cgInputFileOptionName = @"input-file";
+static NSString * const  cgOptionNameHelp = @"help";
+static NSString * const  cgOptionNameVersion = @"version";
+static NSString * const  cgOptionNameSuppressHash = @"suppress-placeholder";
+static NSString * const  cgOptionNameInputFile = @"input-file";
 static NSString * const  cgOptionNameOutputDocument = @"output-document";
 static NSString * const  cgOptionNameOutputAs = @"output-as";
 
@@ -47,8 +47,8 @@ static NSString * const  cgOptionValueFolder = @"folder";
 static NSString * const  cgOptionValueDirectory = @"directory";
 
 // Settings domains
-static NSString * const  cgFactorySettingsName = @"Factory";
-static NSString * const  cgCommandLineSettingsName = @"Command Line";
+static NSString * const  cgSettingsNameFactory = @"Factory";
+static NSString * const  cgSettingsNameCommandLine = @"Command Line";
 
 // Download task information dictionary keys
 static NSString * const  cgTaskInfoUrl = @"url";                    // NSURL
@@ -117,10 +117,10 @@ NSString *  CgBackupFilename(NSString *originalFilename) {
 
 @implementation GBSettings (CgSettings)
 
-GB_SYNTHESIZE_BOOL(printHelp, setPrintHelp, cgHelpOptionName)
-GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgVersionOptionName)
-GB_SYNTHESIZE_BOOL(noPrintHash, setNoPrintHash, cgSuppressHashOptionName)
-GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgInputFileOptionName)
+GB_SYNTHESIZE_BOOL(printHelp, setPrintHelp, cgOptionNameHelp)
+GB_SYNTHESIZE_BOOL(printVersion, setPrintVersion, cgOptionNameVersion)
+GB_SYNTHESIZE_BOOL(noPrintHash, setNoPrintHash, cgOptionNameSuppressHash)
+GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgOptionNameInputFile)
 GB_SYNTHESIZE_COPY(NSString *, destinationName, setDestinationName, cgOptionNameOutputDocument)
 GB_SYNTHESIZE_COPY(NSString *, useFileOrFolder, setUseFileOrFolder, cgOptionNameOutputAs)
 
@@ -180,11 +180,11 @@ GB_SYNTHESIZE_COPY(NSString *, useFileOrFolder, setUseFileOrFolder, cgOptionName
 #pragma mark Command-line processing
 
 + (GBSettings *)generateSettings {
-    GBSettings * const  factoryDefaults = [GBSettings settingsWithName:cgFactorySettingsName parent:nil];
+    GBSettings * const  factoryDefaults = [GBSettings settingsWithName:cgSettingsNameFactory parent:nil];
 
     NSAssert(factoryDefaults, @"The factory default settings failed to initialize");
     [factoryDefaults applyFactoryDefaults];
-    return [GBSettings settingsWithName:cgCommandLineSettingsName parent:factoryDefaults];
+    return [GBSettings settingsWithName:cgSettingsNameCommandLine parent:factoryDefaults];
 }
 
 + (GBOptionsHelper *)generateOptions {
@@ -192,11 +192,11 @@ GB_SYNTHESIZE_COPY(NSString *, useFileOrFolder, setUseFileOrFolder, cgOptionName
 
     if (options) {
         [options registerSeparator:@"Basic Startup Options"];
-        [options registerOption:'h' long:cgHelpOptionName description:@"Display this help and exit" flags:GBOptionNoValue];
-        [options registerOption:'V' long:cgVersionOptionName description:@"Display version data and exit" flags:GBOptionNoValue];
+        [options registerOption:'h' long:cgOptionNameHelp description:@"Display this help and exit" flags:GBOptionNoValue];
+        [options registerOption:'V' long:cgOptionNameVersion description:@"Display version data and exit" flags:GBOptionNoValue];
         [options registerSeparator:@"Logging and Input File Options"];
-        [options registerOption:'#' long:cgSuppressHashOptionName description:@"Prints nothing to standard output, instead of \"#\", when a download fails (Defaults to OFF)" flags:GBOptionNoValue];
-        [options registerOption:'i' long:cgInputFileOptionName description:@"Download the additional URLs listed in the given file, or standard input if the file path is omitted (Defaults to no additional reading)" flags:GBOptionOptionalValue];
+        [options registerOption:'#' long:cgOptionNameSuppressHash description:@"Prints nothing to standard output, instead of \"#\", when a download fails (Defaults to OFF)" flags:GBOptionNoValue];
+        [options registerOption:'i' long:cgOptionNameInputFile description:@"Download the additional URLs listed in the given file, or standard input if the file path is omitted (Defaults to no additional reading)" flags:GBOptionOptionalValue];
         [options registerSeparator:@"Download Options"];
         [options registerOption:'O' long:cgOptionNameOutputDocument description:@"Use the given name or path as the destination file (with one URL) or directory (with multiple URLs) for the downloaded file(s)" flags:GBOptionRequiredValue];
         [options registerOption:0 long:cgOptionNameOutputAs description:@"When using the output document option, use 'file' to force the document path to be a file, and 'directory' or 'folder' to make it a directory (Defaults to using the number of URLs)" flags:GBOptionRequiredValue];
