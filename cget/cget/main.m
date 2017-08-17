@@ -30,7 +30,8 @@ typedef NS_ENUM(int, CgReturnCodes) {
     cgReturnMetadataAndURL,  ///< A "print and exit" option and a URL were both provided.
     cgReturnBadInputFile,  ///< An input file (holding URLs) could not be opened.
     cgReturnBadInputRead,  ///< An input file (holding URLs) was found but could not be read.
-    cgReturnDirectoryFail  ///< An output directory could not be created.
+    cgReturnDirectoryFail,  ///< An output directory could not be created.
+    cgReturnPasswordWithoutUser  ///< The password option was used without the user option.
 };
 
 // Long option strings
@@ -40,6 +41,8 @@ static NSString * const  cgOptionNameSuppressHash = @"suppress-placeholder";
 static NSString * const  cgOptionNameInputFile = @"input-file";
 static NSString * const  cgOptionNameOutputDocument = @"output-document";
 static NSString * const  cgOptionNameOutputAs = @"output-as";
+static NSString * const  cgOptionNameUser = @"user";
+static NSString * const  cgOptionNamePassword = @"password";
 
 // "Option-as" values
 static NSString * const  cgOptionValueFile = @"file";
@@ -113,6 +116,9 @@ NSString *  CgBackupFilename(NSString *originalFilename) {
 @property (nonatomic, copy) id          urlInputFile;     ///< File (path as NSString), or stdin (NSNumber BOOL YES), to read URLs from.
 @property (nonatomic, copy) NSString *  destinationName;  ///< File path (or simple name in current directory) for the downloaded file, overriding the default name. Will be directory when multiple URLs are downloaded.
 @property (nonatomic, copy) NSString *  useFileOrFolder;  ///< "file," "folder," or "directory": when `destinationName` is not NIL, force it to name either a file or directory, instead of the default of using single vs. multiple URLs.
+
+@property (nonatomic, copy) NSString *  userName;  ///< The user portion of a username/password pair to use for authentication.
+@property (nonatomic, copy) NSString *  passWord;  ///< The password portion of a username/password pair to use for authentication. (May be NIL even when the username isn't.)
 @end
 
 @implementation GBSettings (CgSettings)
@@ -123,6 +129,8 @@ GB_SYNTHESIZE_BOOL(noPrintHash, setNoPrintHash, cgOptionNameSuppressHash)
 GB_SYNTHESIZE_COPY(id, urlInputFile, setUrlInputFile, cgOptionNameInputFile)
 GB_SYNTHESIZE_COPY(NSString *, destinationName, setDestinationName, cgOptionNameOutputDocument)
 GB_SYNTHESIZE_COPY(NSString *, useFileOrFolder, setUseFileOrFolder, cgOptionNameOutputAs)
+GB_SYNTHESIZE_COPY(NSString *, userName, setUserName, cgOptionNameUser)
+GB_SYNTHESIZE_COPY(NSString *, passWord, setPassWord, cgOptionNamePassword)
 
 /// Initialize the default state for properties set in the factory settings domain.
 - (void)applyFactoryDefaults {
@@ -151,7 +159,9 @@ GB_SYNTHESIZE_COPY(NSString *, useFileOrFolder, setUseFileOrFolder, cgOptionName
 @property (nonatomic, readonly, assign, getter=isFinished) BOOL  finished;
 
 /// When not `nil`, the downloaded file's name, overriding the default filename.
-@property (nonatomic, copy) NSString *  destinationFilename;
+@property (nonatomic, copy)   NSString *         destinationFilename;
+/// When not `nil`, a username/password pair to use when a URL retrieval needs authentication.
+@property (nonatomic, retain) NSURLCredential *  usernameAndPassword;
 
 /**
     @brief Create a URL-downloading object.
@@ -200,9 +210,11 @@ GB_SYNTHESIZE_COPY(NSString *, useFileOrFolder, setUseFileOrFolder, cgOptionName
         [options registerSeparator:@"Download Options"];
         [options registerOption:'O' long:cgOptionNameOutputDocument description:@"Use the given name or path as the destination file (with one URL) or directory (with multiple URLs) for the downloaded file(s)" flags:GBOptionRequiredValue];
         [options registerOption:0 long:cgOptionNameOutputAs description:@"When using the output document option, use 'file' to force the document path to be a file, and 'directory' or 'folder' to make it a directory (Defaults to using the number of URLs)" flags:GBOptionRequiredValue];
+        [options registerOption:0 long:cgOptionNameUser description:@"Use the given username when an authentication response is needed" flags:GBOptionRequiredValue];
+        [options registerOption:0 long:cgOptionNamePassword description:@"Use the given password when an authentication response is needed" flags:GBOptionRequiredValue];
 
         options.printHelpHeader = ^{ return @"Usage: %APPNAME [OPTIONS] [URL...]"; };
-        options.printHelpFooter = ^{ return @"\nWhen not printing help and/or version text, at least one URL should be submitted as an argument and/or any number though an input file (or standard input)."; };
+        options.printHelpFooter = ^{ return @"\nWhen not printing help and/or version text, at least one URL should be submitted as an argument and/or any number though an input file (or standard input). For non-response authentication, like FTP, incorporate the username/password into the URL."; };
 
         options.applicationVersion = ^{ return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"]; };
         options.applicationBuild = ^{ return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"]; };
@@ -229,6 +241,7 @@ GB_SYNTHESIZE_COPY(NSString *, useFileOrFolder, setUseFileOrFolder, cgOptionName
         _tasks = [NSMutableArray new];
         _results = [NSMutableDictionary new];
         _destinationFilename = nil;
+        _usernameAndPassword = nil;
         _session = nil;
         _doneTasks = 0;
 
@@ -277,6 +290,7 @@ GB_SYNTHESIZE_COPY(NSString *, useFileOrFolder, setUseFileOrFolder, cgOptionName
     NSAssert(session == self.session, @"Given session (%@) isn't the one (%@) owned by this object (%@)", session, self.session, self);
     NSAssert([self.tasks containsObject:downloadTask], @"Given task (%@) isn't one owned by this object (%@)", downloadTask, self);
 
+    NSLog(@"Response: %@", downloadTask.response);
     NSMutableDictionary * const  taskBlock = self.results[downloadTask];
     NSURL * const       plannedDestination = [NSURL fileURLWithPath:(self.destinationFilename ?: downloadTask.response.suggestedFilename) isDirectory:NO];
     NSURL *             stagedLocation = nil;
@@ -318,6 +332,42 @@ GB_SYNTHESIZE_COPY(NSString *, useFileOrFolder, setUseFileOrFolder, cgOptionName
     if (++self.doneTasks >= self.tasks.count) {
         [self.session performSelector:@selector(finishTasksAndInvalidate) withObject:nil afterDelay:0.0];
     }
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
+                            didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
+                              completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *))completionHandler {
+    NSAssert(session == self.session, @"Given session (%@) isn't the one (%@) owned by this object (%@)", session, self.session, self);
+    NSAssert([self.tasks containsObject:task], @"Given task (%@) isn't one owned by this object (%@)", task, self);
+    
+    /*static NSSet *          passwordAuthenticationMethods = nil;
+    static dispatch_once_t  onceToken;
+
+    dispatch_once(&onceToken, ^{
+        passwordAuthenticationMethods = [NSSet setWithObjects:NSURLAuthenticationMethodDefault, NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest, NSURLAuthenticationMethodNTLM, nil];
+    });
+    NSLog(@"Challenge—Error: %@, Failed Response: %@, Previous Fails: %ld, Credential: %@, Protection Space: %@", challenge.error, challenge.failureResponse, (long)challenge.previousFailureCount, challenge.proposedCredential, challenge.protectionSpace);
+    if (self.usernameAndPassword && [passwordAuthenticationMethods containsObject:challenge.protectionSpace.authenticationMethod]) {
+    //if (self.usernameAndPassword && [[NSSet setWithObjects:NSURLAuthenticationMethodDefault, NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest, NSURLAuthenticationMethodNTLM, nil] containsObject:challenge.protectionSpace.authenticationMethod]) {
+    //if (self.usernameAndPassword && ([NSURLAuthenticationMethodDefault isEqualToString:challenge.protectionSpace.authenticationMethod] || [NSURLAuthenticationMethodHTTPBasic isEqualToString:challenge.protectionSpace.authenticationMethod] || [NSURLAuthenticationMethodHTTPDigest isEqualToString:challenge.protectionSpace.authenticationMethod] || [NSURLAuthenticationMethodNTLM isEqualToString:challenge.protectionSpace.authenticationMethod])) {
+        // Password-based authentication
+        completionHandler([challenge.proposedCredential isEqual:self.usernameAndPassword] ? NSURLSessionAuthChallengeRejectProtectionSpace : NSURLSessionAuthChallengeUseCredential, self.usernameAndPassword);
+    } else {
+        completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+    }*/
+    if ( [ @[ NSURLAuthenticationMethodDefault,
+              NSURLAuthenticationMethodHTTPBasic,
+              NSURLAuthenticationMethodHTTPDigest,
+              NSURLAuthenticationMethodNTLM
+              ] containsObject:challenge.protectionSpace.authenticationMethod] ) {
+        completionHandler(
+                          challenge.previousFailureCount ? NSURLSessionAuthChallengeRejectProtectionSpace : NSURLSessionAuthChallengeUseCredential,// NSURLSessionAuthChallengeUseCredential,
+                          [NSURLCredential credentialWithUser:@"hello" password:@"there" persistence:NSURLCredentialPersistenceForSession
+                           ]);
+    } else {
+        completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+    }
+
 }
 
 @end
@@ -457,6 +507,13 @@ int main(int argc, const char * argv[]) {
         }
         if (!useAsDirectory) {
             downloader.destinationFilename = filenameOverride.lastPathComponent;
+        }
+        if (settings.userName) {
+            downloader.usernameAndPassword = [NSURLCredential credentialWithUser:settings.userName password:settings.passWord persistence:NSURLCredentialPersistenceForSession];
+        } else if (settings.passWord) {
+            gbfprintln(stderr, @"Error, authentication: no corresponding username for password");
+            returnCode = cgReturnPasswordWithoutUser;
+            goto finish;
         }
         [downloader resume];
         while (!downloader.finished && [runLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]])
